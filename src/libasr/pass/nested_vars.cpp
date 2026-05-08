@@ -194,8 +194,7 @@ public:
                         }
                     }
                 }
-            }
-            if (ASR::is_a<ASR::Function_t>(*item.second)) {
+            } else if (ASR::is_a<ASR::Function_t>(*item.second)) {
                 ASR::symbol_t* par_func_sym_copy = par_func_sym;
                 par_func_sym = cur_func_sym;
                 ASR::Function_t *s = ASR::down_cast<ASR::Function_t>(
@@ -209,6 +208,8 @@ public:
 
                 visit_Function(*s);
                 par_func_sym = par_func_sym_copy;
+            } else {
+                visit_symbol(*item.second);
             }
         }
         if (!is_func_visited) {
@@ -475,11 +476,11 @@ class ReplaceNestedVisitor: public ASR::CallReplacerOnExpressionsVisitor<Replace
             // Iterate on each function with nested vars and create a context in
             // a new module.
             current_scope = al.make_new<SymbolTable>(current_scope_copy);
-            std::string module_name = "__lcompilers_created__nested_context__" + std::string(
-                                    ASRUtils::symbol_name(it.first)) + "_";
+            std::string module_name = "__lcompilers_created__nested_context__" + 
+                std::string(ASRUtils::symbol_name(it.first)) + "_"; 
             bool is_any_variable_externally_defined = false;
             std::map<ASR::symbol_t*, std::string> sym_to_name;
-            module_name = current_scope->get_unique_name(module_name, false);
+            module_name = x.m_symtab->get_unique_name(module_name, false);
             for (auto &it2: it.second) {
                 std::string new_ext_var = std::string(ASRUtils::symbol_name(it2));
                 ASR::Variable_t* var = ASR::down_cast<ASR::Variable_t>(

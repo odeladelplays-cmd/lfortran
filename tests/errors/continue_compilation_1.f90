@@ -247,7 +247,7 @@ program continue_compilation_1
     character(len=10, len=20) :: str_c_2
     character(len=10, 1) :: str_c_3
     character(1, len=20) :: str_c_4
-    character(:), allocatable :: x(2)
+    character(:), allocatable :: z_01(2)
     integer, dimension(:,:), allocatable :: arr_size
     logical :: mask_size(size(arr_size))
     integer, protected :: protected_attr_var
@@ -648,7 +648,7 @@ program continue_compilation_1
     a(1) = .true.
     derived_cls = base_var
     call print_len_non_char("  Hello World  ")
-
+    print  *, 9.99e+99
 
 
 
@@ -709,4 +709,9 @@ program continue_compilation_1
         integer :: x(3)
         x = [character(len=3) :: "aa", "bb", "aa"]
     end subroutine sub_array_constant_character_to_integer
+
+    subroutine Z_01_sub()
+        integer,allocatable  :: x(3)
+        integer,pointer  :: y(3)
+    end subroutine
 end program

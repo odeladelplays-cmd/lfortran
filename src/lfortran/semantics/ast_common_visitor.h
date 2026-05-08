@@ -2171,16 +2171,22 @@ public:
         ASR::symbol_t *v = scope->resolve_symbol(var_name);
         if (compiler_options.implicit_typing) {
             if (!in_Subroutine) {
-                if (implicit_mapping.size() != 0) {
-                    implicit_dictionary = implicit_mapping[get_hash(current_scope->asr_owner)];
+                if (implicit_mapping.size() != 0 && current_scope->asr_owner) {
+                    auto it = implicit_mapping.find(get_hash(current_scope->asr_owner));
+                    if (it != implicit_mapping.end()) {
+                        implicit_dictionary = it->second;
+                    }
                     if (implicit_dictionary.size() == 0 && current_scope->parent
                             && current_scope->parent->asr_owner) {
                         implicit_dictionary = implicit_mapping[get_hash(
                             current_scope->parent->asr_owner)];
                     }
-                    if (implicit_dictionary.size() == 0 && is_implicit_interface) {
-                        implicit_dictionary = implicit_mapping[get_hash(implicit_interface_parent_scope->asr_owner)];
                     }
+                    if (implicit_dictionary.size() == 0 && is_implicit_interface
+                            && implicit_interface_parent_scope->asr_owner
+                            && implicit_mapping.find(get_hash(implicit_interface_parent_scope->asr_owner))
+                                != implicit_mapping.end()) {
+                        implicit_dictionary = implicit_mapping[get_hash(implicit_interface_parent_scope->asr_owner)];
                 }
             }
         }
@@ -2683,7 +2689,8 @@ public:
 		} else {
 		    intent = ASRUtils::intent_local;
 		}
-		get_sym = declare_implicit_variable2(s.loc, sym, intent, implicit_dictionary[std::string(1,sym[0])]);
+		ASR::ttype_t* typ = implicit_dictionary.at(std::string(1,sym[0]));
+		get_sym = declare_implicit_variable2(s.loc, sym, intent, typ);
 	    } else {
 		if (symbols_having_only_attributes_without_type.find(sym) == symbols_having_only_attributes_without_type.end()) {
 	            ASR::intentType intent;
@@ -6014,7 +6021,7 @@ public:
                                                     nullptr, nullptr, ASR::storage_typeType::Default, storage_array_type, nullptr,
                                                     ASR::abiType::Source, ASR::accessType::Public, ASR::presenceType::Required,
                                                     false, false, false, nullptr, false, false,
-                                                    ASR::pass_attrType::NotMethod, nullptr, 0);
+                                                    ASR::pass_attrType::NotMethod, nullptr, 0, nullptr, 0, false);
 
                                                 current_scope->add_symbol(storage_name, ASR::down_cast<ASR::symbol_t>(storage_var));
 
@@ -6667,6 +6674,8 @@ public:
                 bool is_volatile = false;
                 bool is_protected = false;
                 int64_t corank = 0;
+                Vec<ASR::codimension_t> codims;
+                codims.reserve(al, 0);
                 AST::AttrType_t *sym_type = nullptr;
 
                 if (AST::is_a<AST::AttrType_t>(*x.m_vartype))
@@ -6697,24 +6706,6 @@ public:
                     }
                 }
 
-                if (is_char_type && sym_type->n_kind == ASR::string_length_kindType::DeferredLength &&  is_allocatable) {
-                    bool has_fixed_shape = false;
-                    for (size_t d = 0; d < s.n_dim; d++) {
-                        if (s.m_dim[d].m_end != nullptr && s.m_dim[d].m_end_star == 0) {
-                            has_fixed_shape = true;
-                            break;
-                        }
-                    }
-                    if (has_fixed_shape && s.n_dim > 0) {
-                        diag.add(Diagnostic(
-                            "Allocatable array '" + std::string(x.m_syms[0].m_name)
-                            + "' must have a deferred shape or assumed rank",
-                            Level::Error,Stage::Semantic,{ 
-                                Label("", { s.loc }) 
-                            }));
-                        throw SemanticAbort();
-                    }
-                }
                 if (assgnd_access.count(sym)) {
                     s_access = assgnd_access[sym];
                 }
@@ -6950,6 +6941,27 @@ public:
                             AST::AttrCodimension_t *ac =
                                 AST::down_cast<AST::AttrCodimension_t>(a);
                             corank = ac->n_codim;
+                            codims.reserve(al, ac->n_codim);
+                            for (size_t c = 0; c < ac->n_codim; c++) {
+                                AST::codimension_t &ast_codim = ac->m_codim[c];
+                                ASR::codimension_t asr_codim;
+                                asr_codim.loc = ast_codim.loc;
+                                asr_codim.m_start = nullptr;
+                                asr_codim.m_end = nullptr;
+                                if (ast_codim.m_start) {
+                                    this->visit_expr(*ast_codim.m_start);
+                                    asr_codim.m_start = ASRUtils::EXPR(tmp);
+                                }
+                                if (ast_codim.m_end) {
+                                    this->visit_expr(*ast_codim.m_end);
+                                    asr_codim.m_end = ASRUtils::EXPR(tmp);
+                                }
+                                asr_codim.m_end_star = ast_codim.m_end_star ==
+                                    AST::codimension_typeType::CodimensionStar
+                                    ? ASR::codimension_typeType::CodimensionStar
+                                    : ASR::codimension_typeType::CodimensionExpr;
+                                codims.push_back(al, asr_codim);
+                            }
                         } else {
                             diag.add(Diagnostic(
                                 "Attribute type not implemented yet",
@@ -7055,6 +7067,27 @@ public:
                 // Corank from var_sym codimension (e.g., integer :: x[*])
                 if (s.n_codim > 0) {
                     corank = s.n_codim;
+                    codims.reserve(al, s.n_codim);
+                    for (size_t c = 0; c < s.n_codim; c++) {
+                        AST::codimension_t &ast_codim = s.m_codim[c];
+                        ASR::codimension_t asr_codim;
+                        asr_codim.loc = ast_codim.loc;
+                        asr_codim.m_start = nullptr;
+                        asr_codim.m_end = nullptr;
+                        if (ast_codim.m_start) {
+                            this->visit_expr(*ast_codim.m_start);
+                            asr_codim.m_start = ASRUtils::EXPR(tmp);
+                        }
+                        if (ast_codim.m_end) {
+                            this->visit_expr(*ast_codim.m_end);
+                            asr_codim.m_end = ASRUtils::EXPR(tmp);
+                        }
+                        asr_codim.m_end_star = ast_codim.m_end_star ==
+                            AST::codimension_typeType::CodimensionStar
+                            ? ASR::codimension_typeType::CodimensionStar
+                            : ASR::codimension_typeType::CodimensionExpr;
+                        codims.push_back(al, asr_codim);
+                    }
                 }
                 if (!is_argument && !is_allocatable && !is_pointer
                         && !is_dimension_star && dims.size() > 0) {
@@ -7177,6 +7210,9 @@ public:
                             variable_added_to_symtab = symbol_variable;
                             if (corank > 0) {
                                 symbol_variable->m_corank = corank;
+                                symbol_variable->m_is_coarray = true;
+                                symbol_variable->m_codims = codims.p;
+                                symbol_variable->n_codims = codims.n;
                             }
                         } else {
                             // Compute pass_attr for procedure pointer components in structs
@@ -7198,7 +7234,7 @@ public:
                                 variable_dependencies_vec.size(), s_intent, init_expr, value,
                                 storage_type, type, type_declaration, s_abi, s_access, s_presence,
                                 value_attr, target_attr, contig_attr, bindc_name, is_volatile,
-                                is_protected, pass_attr, self_argument, corank
+                                is_protected, pass_attr, self_argument, corank, codims.p, codims.n, corank > 0
                             );
                             current_scope->add_symbol(sym, ASR::down_cast<ASR::symbol_t>(v));
                             variable_added_to_symtab = ASR::down_cast<ASR::Variable_t>(ASR::down_cast<ASR::symbol_t>(v));
@@ -8248,6 +8284,31 @@ public:
             } // for m_syms
         }
         _declaring_variable = false;
+    }
+    
+    /* Make sure an allocatable-array OR pointer-array (non-assumed dim array) has empty dimensions (deferred) */ 
+    void ensure_deferred_shape_for_allocatable_or_pointer_array(ASR::ttype_t* type, const std::string& sym) {
+        LCOMPILERS_ASSERT(type)
+        if (ASRUtils::is_array_t(type) && ASRUtils::is_allocatable_or_pointer(type)) {
+            ASR::Array_t* const array_type = ASR::down_cast<ASR::Array_t>(
+                ASRUtils::type_get_past_allocatable_pointer(type));
+            if (array_type->m_physical_type == ASR::AssumedRankArray) return;
+            for (size_t i = 0; i < array_type->n_dims; i++) {
+                std::string const attr_name = ASRUtils::is_allocatable(type) ? 
+                                                "Allocatable" : "Pointer";
+                if (array_type->m_dims[i].m_start != nullptr ||
+                    array_type->m_dims[i].m_length != nullptr) {
+                    diag.add(Diagnostic(
+                        std::string(attr_name) + " array '" + sym +
+                        "' must have a deferred shape or assumed rank",
+                        Level::Error, Stage::Semantic, {
+                            Label("", {type->base.loc})
+                        }));
+                    throw SemanticAbort();
+                }
+            }
+        }
+
     }
 
     void visit_BlockData(const AST::BlockData_t&/*x*/) {
@@ -9597,11 +9658,13 @@ public:
                 }));
             throw SemanticAbort();
         }
-
+        
         if( is_allocatable ) {
-            type = ASRUtils::TYPE(ASRUtils::make_Allocatable_t_util(al, loc,
-                ASRUtils::type_get_past_allocatable(type)));
+            type = ASRUtils::TYPE(
+                ASR::make_Allocatable_t(
+                    al, loc, ASRUtils::type_get_past_allocatable(type)));
         }
+        ensure_deferred_shape_for_allocatable_or_pointer_array(type, sym);
 
         return type;
     }
@@ -15333,10 +15396,28 @@ public:
         current_scope = al.make_new<SymbolTable>(sym_scope);
 
         Vec<ASR::call_arg_t> c_args;
-        visit_expr_list(x.m_args, x.n_args, c_args);
+        c_args.reserve(al, x.n_args + 1);
+        bool has_alt_returns = false;
+        for (size_t i = 0; i < x.n_args; i++) {
+            if (x.m_args[i].m_end == nullptr && x.m_args[i].m_label != 0) {
+                has_alt_returns = true;
+                continue;
+            }
+            this->visit_expr(*x.m_args[i].m_end);
+            ASR::expr_t *expr = ASRUtils::EXPR(tmp);
+            c_args.push_back(al, {expr->base.loc, expr});
+        }
+        // Reserve spot for compiler's `__lfortran_alt_ret` 
+        if (has_alt_returns) {
+            ASR::ttype_t* int_type = ASRUtils::TYPE(ASR::make_Integer_t(al, x.base.base.loc,
+                compiler_options.po.default_integer_kind));
+            ASR::expr_t* alt_ret_expr = ASRUtils::EXPR(ASR::make_IntegerConstant_t(
+                al, x.base.base.loc, 0, int_type));
+            c_args.push_back(al, {x.base.base.loc, alt_ret_expr});
+        }
 
         Vec<ASR::expr_t*> args;
-        args.reserve(al, x.n_args);
+        args.reserve(al, c_args.size());
         std::string sym_name = to_lower(func_name);
 
         // For implicit argument casting, look up the Implementation to get correct param types
@@ -15356,7 +15437,7 @@ public:
             }
         }
 
-        for (size_t i=0; i<x.n_args; i++) {
+        for (size_t i=0; i<c_args.size(); i++) {
             std::string arg_name = sym_name + "_arg_" + std::to_string(i);
             arg_name = to_lower(arg_name);
             ASR::expr_t *var_expr = c_args[i].m_value;
@@ -16587,6 +16668,56 @@ public:
         }
     }
 
+    // Helper function to validate codimension bounds for coarray references
+    void validate_coarray_bounds(ASR::Variable_t* var, const std::string& name,
+                                  const Vec<ASR::array_index_t>& coindices) {
+        if (!var || var->n_codims == 0) {
+            return;
+        }
+        size_t n = std::min(var->n_codims, coindices.n);
+        for (size_t i = 0; i < n; i++) {
+            ASR::codimension_t &codim = var->m_codims[i];
+            if (codim.m_end_star == ASR::codimension_typeType::CodimensionStar) {
+                continue;
+            }
+            ASR::expr_t* idx = coindices[i].m_left;
+            if (!idx) {
+                continue;
+            }
+            ASR::expr_t* idx_val = ASRUtils::expr_value(idx);
+            if (!idx_val || !ASR::is_a<ASR::IntegerConstant_t>(*idx_val)) {
+                continue;
+            }
+            int64_t idx_n = ASR::down_cast<ASR::IntegerConstant_t>(idx_val)->m_n;
+            int64_t lb = 1;
+            int64_t ub = 0;
+            if (codim.m_start) {
+                ASR::expr_t* lb_val = ASRUtils::expr_value(codim.m_start);
+                if (!lb_val || !ASR::is_a<ASR::IntegerConstant_t>(*lb_val)) {
+                    continue;
+                }
+                lb = ASR::down_cast<ASR::IntegerConstant_t>(lb_val)->m_n;
+            }
+            if (codim.m_end) {
+                ASR::expr_t* ub_val = ASRUtils::expr_value(codim.m_end);
+                if (!ub_val || !ASR::is_a<ASR::IntegerConstant_t>(*ub_val)) {
+                    continue;
+                }
+                ub = ASR::down_cast<ASR::IntegerConstant_t>(ub_val)->m_n;
+            } else {
+                continue;
+            }
+            if (idx_n < lb || idx_n > ub) {
+                diag.add(Diagnostic(
+                    "Coarray '" + name + "' coindex " + std::to_string(i + 1) +
+                    " is out of bounds: " + std::to_string(idx_n) +
+                    " not in [" + std::to_string(lb) + ", " + std::to_string(ub) + "]",
+                    Level::Error, Stage::Semantic, {Label("", {coindices[i].loc})}));
+                throw SemanticAbort();
+            }
+        }
+    }
+
     // Handle CoarrayRef: In single-image mode, x[i] resolves to just x,
     // and x(i,j)[k] resolves to x(i,j). Cosubscripts are ignored.
     void visit_CoarrayRef(const AST::CoarrayRef_t &x) {
@@ -16645,6 +16776,12 @@ public:
 
             // Semantic check: number of coindices must match corank
             int64_t var_corank = ASRUtils::symbol_corank(f2);
+            ASR::Variable_t* var = ASR::is_a<ASR::Variable_t>(*f2)
+                ? ASR::down_cast<ASR::Variable_t>(f2)
+                : nullptr;
+            if (var && var->n_codims > 0) {
+                var_corank = var->n_codims;
+            }
             if (var_corank > 0 && (int64_t)coindices.n != var_corank) {
                 diag.add(Diagnostic(
                     "Coarray '" + to_lower(x.m_member[x.n_member - 1].m_name) +
@@ -16653,6 +16790,7 @@ public:
                     Level::Error, Stage::Semantic, {Label("", {loc})}));
                 throw SemanticAbort();
             }
+            validate_coarray_bounds(var, to_lower(x.m_member[x.n_member - 1].m_name), coindices);
 
             ASR::expr_t *base = nullptr;
             if (x.n_args > 0) {
@@ -16690,6 +16828,12 @@ public:
 
             // Semantic check: number of coindices must match corank
             int64_t var_corank = ASRUtils::symbol_corank(f2);
+            ASR::Variable_t* var = ASR::is_a<ASR::Variable_t>(*f2)
+                ? ASR::down_cast<ASR::Variable_t>(f2)
+                : nullptr;
+            if (var && var->n_codims > 0) {
+                var_corank = var->n_codims;
+            }
             if (var_corank > 0 && (int64_t)coindices.n != var_corank) {
                 diag.add(Diagnostic(
                     "Coarray '" + var_name + "' has corank " +
@@ -16698,6 +16842,7 @@ public:
                     Level::Error, Stage::Semantic, {Label("", {loc})}));
                 throw SemanticAbort();
             }
+            validate_coarray_bounds(var, var_name, coindices);
 
             if (x.n_args > 0) {
                 // x(i,j)[k]
@@ -18389,6 +18534,11 @@ public:
             throw SemanticAbort();
         }
         ASR::ttype_t *type = ASRUtils::TYPE(ASR::make_Real_t(al, x.base.base.loc, r_kind));
+        if (std::isinf(r)) {
+            diag.add(Diagnostic(
+                "Real constant overflows its kind (" + std::to_string(r_kind) + ")",
+                Level::Warning, Stage::Semantic, {Label("", {x.base.base.loc})}));
+        }
         tmp = ASR::make_RealConstant_t(al, x.base.base.loc, r, type);
     }
 
@@ -18523,7 +18673,8 @@ public:
                     ASR::storage_typeType::Default, arg_type_arr[i], nullptr,
                     ASR::abiType::BindC, ASR::accessType::Public,
                     ASR::presenceType::Required, false, false, false, nullptr,
-                    false, false, ASR::pass_attrType::NotMethod, nullptr, 0));
+                    false, false, ASR::pass_attrType::NotMethod, nullptr,
+                    0, nullptr, 0, false));
             fn_scope->add_symbol(arg_name, arg_sym);
             args.push_back(al, ASRUtils::EXPR(
                 ASR::make_Var_t(al, loc, arg_sym)));
@@ -18538,7 +18689,8 @@ public:
                     ASR::storage_typeType::Default, return_type, nullptr,
                     ASR::abiType::BindC, ASR::accessType::Public,
                     ASR::presenceType::Required, false, false, false, nullptr,
-                    false, false, ASR::pass_attrType::NotMethod, nullptr, 0));
+                    false, false, ASR::pass_attrType::NotMethod, nullptr,
+                    0, nullptr, 0, false));
             fn_scope->add_symbol(rv_name, rv_sym);
             return_var = ASRUtils::EXPR(ASR::make_Var_t(al, loc, rv_sym));
         }
